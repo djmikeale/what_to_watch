@@ -22,20 +22,20 @@ def load_movies():
     return pl.read_parquet(MOVIES_DB)
 
 def load_watched():
-    """Load watched movies"""
+    """Load watched/skipped movies"""
     if Path(WATCHED_FILE).exists():
         with open(WATCHED_FILE) as f:
             return json.load(f)
-    return []
+    return {}
 
 def save_watched(watched):
-    """Save watched movies"""
+    """Save watched/skipped movies"""
     with open(WATCHED_FILE, "w") as f:
         json.dump(watched, f, indent=2)
 
-def is_movie_watched(film_id, watched_list):
-    """Check if a movie is in watched list"""
-    return any(w["film_id"] == film_id for w in watched_list)
+def is_movie_excluded(film_id, watched_dict):
+    """Check if a movie is watched or skipped"""
+    return film_id in watched_dict
 
 def load_config():
     """Load user's streaming platform preferences"""
@@ -153,10 +153,10 @@ def setup_platforms():
 
     console.print(f"\n[green]✓ Saved: {', '.join(selected)}[/green]\n")
 
-def get_candidate_movies(movies_df, watched_list):
-    """Get unwatched movies"""
-    watched_ids = {w["film_id"] for w in watched_list}
-    return movies_df.filter(~pl.col("film_id").is_in(watched_ids)).to_dicts()
+def get_candidate_movies(movies_df, watched_dict):
+    """Get unwatched and unskipped movies"""
+    excluded_ids = set(watched_dict.keys())
+    return movies_df.filter(~pl.col("film_id").is_in(excluded_ids)).to_dicts()
 
 def get_movies_with_streaming(candidates, platforms, batch_size=50):
     """
@@ -212,11 +212,10 @@ def display_movie(movie_data):
 
     rating_str = f"{streaming['rating']}/10" if streaming['rating'] else "N/A"
 
+# include imdb link if available
     panel_content = f"""[bold cyan]{streaming['title']}[/bold cyan]
 
-[dim]IMDb ID: {movie['film_id']}[/dim]
-
-[bold yellow]Rating:[/bold yellow] {rating_str}   [bold yellow]Runtime:[/bold yellow] {streaming['runtime']} minutes   [bold yellow]Genres:[/bold yellow] {', '.join(convert_genre_short_to_long(genre) for genre in streaming['genres']) if streaming['genres'] else 'N/A'}
+[bold yellow]Rating:[/bold yellow] {rating_str} ([link=https://www.imdb.com/title/{streaming['imdb_id']}/]IMDb[/link])  [bold yellow]Runtime:[/bold yellow] {streaming['runtime']} minutes   [bold yellow]Genres:[/bold yellow] {', '.join(convert_genre_short_to_long(genre) for genre in streaming['genres']) if streaming['genres'] else 'N/A'}
 
 [bold yellow]Description:[/bold yellow] {streaming['description']}
 """
@@ -226,7 +225,7 @@ def display_movie(movie_data):
         if offer != offers[-1]:
             panel_content += ","
 
-    panel_content += "\n\n[dim]Y Watch  |  A Skip  |  N Skip  |  P Platforms  |  Q Quit[/dim]"
+    panel_content += "\n\n[dim]W Watch  |  S Skip  |  P Platform Config  |  Q Quit[/dim]"
     console.print("\n")
     console.print(Panel(panel_content, border_style="cyan"))
 
@@ -283,25 +282,30 @@ def tinder_mode():
 
         choice = get_single_keypress()
 
-        if choice in ["a", "n"]:
-            continue
-        elif choice == "y":
-            comment = watch_movie(offers)
-            watched_entry = {
-                "film_id": movie_data["movie"]["film_id"],
+        if choice == "s":
+            watched[movie_data["movie"]["film_id"]] = {
                 "title": movie_data["streaming"]["title"],
+                "status": "skipped",
+                "timestamp": datetime.now().isoformat()
+            }
+            save_watched(watched)
+        elif choice == "w":
+            comment = watch_movie(offers)
+            watched[movie_data["movie"]["film_id"]] = {
+                "title": movie_data["streaming"]["title"],
+                "status": "watched",
                 "comment": comment,
                 "timestamp": datetime.now().isoformat()
             }
-            watched.append(watched_entry)
             save_watched(watched)
-            console.print("[green]✓ Marked as watched[/green]")
         elif choice == "p":
             setup_platforms()
             config = load_config()
         elif choice == "q":
             console.print("[cyan]Goodbye! 🎬[/cyan]")
             break
+        else:
+            continue
 
     if choice != "q":
         console.print("[cyan]No more movies! Add more platforms or check back later.[/cyan]")
