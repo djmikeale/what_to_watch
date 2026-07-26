@@ -1,13 +1,13 @@
 import json
 import webbrowser
 from pathlib import Path
+from datetime import datetime
 import polars as pl
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Prompt, Confirm
 from simplejustwatchapi import search
-from pynput import keyboard
-import threading
+from rich.prompt import Confirm
+import readchar
 
 console = Console()
 
@@ -17,22 +17,6 @@ STREAMING_DB = "streaming_cache.json"
 CONFIG_FILE = "user_config.json"
 WATCHED_FILE = "watched_movies.json"
 
-# Global for keyboard input
-key_pressed = None
-
-def on_press(key):
-    """Capture key presses"""
-    global key_pressed
-    try:
-        if key == keyboard.Key.left:
-            key_pressed = "left"
-        elif key == keyboard.Key.right:
-            key_pressed = "right"
-        elif key.char in ['q', 'Q']:
-            key_pressed = "quit"
-    except AttributeError:
-        pass
-
 def load_movies():
     """Load movies from parquet file"""
     return pl.read_parquet(MOVIES_DB)
@@ -41,13 +25,17 @@ def load_watched():
     """Load watched movies"""
     if Path(WATCHED_FILE).exists():
         with open(WATCHED_FILE) as f:
-            return set(json.load(f))
-    return set()
+            return json.load(f)
+    return []
 
 def save_watched(watched):
     """Save watched movies"""
     with open(WATCHED_FILE, "w") as f:
-        json.dump(list(watched), f)
+        json.dump(watched, f, indent=2)
+
+def is_movie_watched(film_id, watched_list):
+    """Check if a movie is in watched list"""
+    return any(w["film_id"] == film_id for w in watched_list)
 
 def load_config():
     """Load user's streaming platform preferences"""
@@ -163,11 +151,12 @@ def setup_platforms():
     config["platforms"] = selected
     save_config(config)
 
-    console.print(f"\n[green]✓ Saved: {', '.join(selected)}[/green]")
+    console.print(f"\n[green]✓ Saved: {', '.join(selected)}[/green]\n")
 
-def get_candidate_movies(movies_df, watched):
-    """Get unwatched movies (all of them, no filtering yet)"""
-    return movies_df.filter(~pl.col("film_id").is_in(watched)).to_dicts()
+def get_candidate_movies(movies_df, watched_list):
+    """Get unwatched movies"""
+    watched_ids = {w["film_id"] for w in watched_list}
+    return movies_df.filter(~pl.col("film_id").is_in(watched_ids)).to_dicts()
 
 def get_movies_with_streaming(candidates, platforms, batch_size=50):
     """
@@ -237,34 +226,43 @@ def display_movie(movie_data):
         if offer != offers[-1]:
             panel_content += ","
 
-    panel_content += "\n\n[dim] Select: ← Maybe Later  |  → Watch  |  Q Quit[/dim]"
+    panel_content += "\n\n[dim]Y Watch  |  A Skip  |  N Skip  |  P Platforms  |  Q Quit[/dim]"
     console.print("\n")
     console.print(Panel(panel_content, border_style="cyan"))
 
     return offers
 
+def get_single_keypress():
+    """Read a single keypress from user without waiting for Enter"""
+    try:
+        key = readchar.readchar().lower()
+        return key
+    except (KeyboardInterrupt, EOFError):
+        return "q"
+
+def get_movie_comment():
+    """Prompt user for a comment about the movie"""
+    console.print("\n[dim]What did you think? (optional, press Enter to skip)[/dim]")
+    comment = console.input("[cyan]Comment: [/cyan]").strip()
+    return comment if comment else ""
+
 def watch_movie(offers):
-    """Open streaming link"""
+    """Open streaming link and get user comment"""
     webbrowser.open(offers[0]["url"])
-    return True
-
-def wait_for_key():
-    """Wait for arrow key or q press"""
-    global key_pressed
-    key_pressed = None
-
-    with keyboard.Listener(on_press=on_press) as listener:
-        while key_pressed is None:
-            pass
-
-    return key_pressed
+    comment = get_movie_comment()
+    return comment
 
 def tinder_mode():
     """Main tinder-style movie suggestion loop"""
     config = load_config()
+
+    # If no platforms configured, run setup first
     if not config.get("platforms"):
-        console.print("[yellow]No streaming platforms configured. Run setup first.[/yellow]")
-        return
+        setup_platforms()
+        config = load_config()
+        if not config.get("platforms"):
+            console.print("[yellow]No platforms selected. Exiting.[/yellow]")
+            return
 
     movies_df = load_movies()
     watched = load_watched()
@@ -283,41 +281,34 @@ def tinder_mode():
     for movie_data in movie_generator:
         offers = display_movie(movie_data)
 
-        choice = wait_for_key()
+        choice = get_single_keypress()
 
-        if choice == "left":
+        if choice in ["a", "n"]:
             continue
-        elif choice == "right":
-            if watch_movie(offers):
-                watched.add(movie_data["movie"]["film_id"])
-                save_watched(watched)
-                console.print("[green]✓ Marked as watched[/green]")
-        elif choice == "quit":
-            break
-
-    console.print("[cyan]No more movies! Add more platforms or check back later.[/cyan]")
-
-def main():
-    """Main menu"""
-    while True:
-        console.print(Panel(
-            "[bold cyan]🎬 What to Watch[/bold cyan]",
-            expand=False
-        ))
-
-        console.print("\n1. Setup streaming platforms")
-        console.print("2. Get movie suggestion")
-        console.print("3. Exit")
-
-        choice = Prompt.ask("Select", choices=["1", "2", "3"])
-
-        if choice == "1":
+        elif choice == "y":
+            comment = watch_movie(offers)
+            watched_entry = {
+                "film_id": movie_data["movie"]["film_id"],
+                "title": movie_data["streaming"]["title"],
+                "comment": comment,
+                "timestamp": datetime.now().isoformat()
+            }
+            watched.append(watched_entry)
+            save_watched(watched)
+            console.print("[green]✓ Marked as watched[/green]")
+        elif choice == "p":
             setup_platforms()
-        elif choice == "2":
-            tinder_mode()
-        else:
+            config = load_config()
+        elif choice == "q":
             console.print("[cyan]Goodbye! 🎬[/cyan]")
             break
+
+    if choice != "q":
+        console.print("[cyan]No more movies! Add more platforms or check back later.[/cyan]")
+
+def main():
+    """Entry point - jump directly to tinder mode"""
+    tinder_mode()
 
 if __name__ == "__main__":
     main()
