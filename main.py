@@ -61,7 +61,7 @@ def save_streaming_cache(cache):
     with open(STREAMING_DB, "w") as f:
         json.dump(cache, f, indent=2)
 
-def fetch_and_cache_streaming(film_title, imdb_id):
+def fetch_and_cache_streaming(film_title, imdb_id, nominations_wins):
     """Fetch streaming info and cache it"""
     cache = load_streaming_cache()
 
@@ -80,6 +80,7 @@ def fetch_and_cache_streaming(film_title, imdb_id):
                 "description": entry.short_description,
                 "genres": entry.genres,
                 "rating": entry.scoring.imdb_score if entry.scoring else None,
+                "nominations_wins": nominations_wins,
                 "offers": []
             }
 
@@ -179,7 +180,7 @@ def get_movies_with_streaming(candidates, platforms, batch_size=50):
             cached_count += 1
         else:
             # Fetch and cache
-            streaming_info = fetch_and_cache_streaming(movie["film"], imdb_id)
+            streaming_info = fetch_and_cache_streaming(movie["film"], imdb_id, movie.get("nominations_wins"))
             fetched_count += 1
 
             # Show progress every batch_size fetches
@@ -204,7 +205,6 @@ def get_movies_with_streaming(candidates, platforms, batch_size=50):
 
 def display_movie(movie_data):
     """Display a movie in tinder-style"""
-    movie = movie_data["movie"]
     streaming = movie_data["streaming"]
     offers = movie_data["offers"]
 
@@ -212,18 +212,19 @@ def display_movie(movie_data):
 
     rating_str = f"{streaming['rating']}/10" if streaming['rating'] else "N/A"
 
-# include imdb link if available
-    panel_content = f"""[bold cyan]{streaming['title']}[/bold cyan]
+    panel_content = f"""[bold cyan]{streaming['title']}[/bold cyan]    ⭐ {rating_str} ([link=https://www.imdb.com/title/{streaming['imdb_id']}/]IMDb[/link])    🕓 {streaming['runtime']} min    🎭 {', '.join(convert_genre_short_to_long(genre) for genre in streaming['genres'])}
 
-[bold yellow]Rating:[/bold yellow] {rating_str} ([link=https://www.imdb.com/title/{streaming['imdb_id']}/]IMDb[/link])  [bold yellow]Runtime:[/bold yellow] {streaming['runtime']} minutes   [bold yellow]Genres:[/bold yellow] {', '.join(convert_genre_short_to_long(genre) for genre in streaming['genres']) if streaming['genres'] else 'N/A'}
+{streaming['description']}
 
-[bold yellow]Description:[/bold yellow] {streaming['description']}
 """
-    panel_content += "\n[bold yellow]Available on:[/bold yellow] "
     for offer in offers:
-        panel_content += f" [link={offer['url']}]{offer['service']}[/link]"
+        panel_content += f"🎬 [link={offer['url']}]{offer['service']}[/link]"
         if offer != offers[-1]:
             panel_content += ","
+
+    nominations_str = " | ".join(streaming['nominations_wins'])
+
+    panel_content += f"\n🗽 {nominations_str}"
 
     panel_content += "\n\n[dim]W Watch  |  S Skip  |  P Platform Config  |  Q Quit[/dim]"
     console.print("\n")
